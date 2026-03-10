@@ -1,0 +1,22 @@
+# Compiled binaries
+claude
+carl
+*.o
+*.a
+
+# Vendored TLS library (large, fetch from upstream)
+cryanc.c
+cryanc.h
+
+# Config with API key
+.claude_api_key
+
+# Claude Code local settings (may contain allowed commands with credentials)
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Rufus (unrelated tool)
+Rufus/
