@@ -75,8 +75,6 @@ nextstep_mcp.py   — MCP server for remote development via telnet
 - **[Claude Code](https://claude.ai/claude-code)** — Anthropic's CLI tool, used for all development
 - **NeXTSTEP 3.3** (NeXT Computer, 1993) — The operating system
 - **gcc 2.5.8** (cc-437.2.6) — The compiler, vintage 1993
-- **Lenovo ThinkPad T410** running Xubuntu — Internet gateway and dev bridge
-- **Netgear GS205** — Ethernet switch connecting NeXT to T410
 
 ### Inspiration
 - The NeXT community at [nextcomputers.org](https://www.nextcomputers.org/)
