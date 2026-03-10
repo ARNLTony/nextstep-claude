@@ -21,7 +21,7 @@ you> _
 ## Hardware
 
 - **NeXTstation Turbo Color** — Motorola 68040 @ 33MHz, running NeXTSTEP 3.3
-- **Lenovo ThinkPad T410** — acts as internet gateway (NAT/IP forwarding) and development bridge
+
 
 ## How It Works
 
@@ -30,10 +30,7 @@ The NeXTstation connects directly to the Claude API (`api.anthropic.com`) over H
 ```
 NeXTstation (68040)  ──── HTTPS/TLS 1.2 ────►  api.anthropic.com
      192.168.1.2                                     Claude API
-                     ┌──────────────┐
-                     │ T410 gateway │  (IP routing/NAT only,
-                     │ 192.168.1.1  │   no TLS involvement)
-                     └──────────────┘
+       
 ```
 
 TLS handshake takes ~10 seconds on the 33MHz 68040. A small price for direct, encrypted communication from a 1993 machine.
@@ -64,16 +61,6 @@ cryanc.c          — Crypto Ancienne TLS library (vendored)
 cryanc.h          — Crypto Ancienne header (vendored)
 nextstep_mcp.py   — MCP server for remote development via telnet
 ```
-
-## Network Setup
-
-The NeXTstation reaches the internet through the T410 gateway:
-
-- NeXT IP: `192.168.1.2`
-- T410 Ethernet: `192.168.1.1` (gateway, NAT to WiFi)
-- DNS: `8.8.8.8` (configured via NetInfo)
-- Default route: `/usr/etc/route add default 192.168.1.1 1`
-
 ## Credits & Acknowledgments
 
 ### Authors
