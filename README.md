@@ -29,7 +29,11 @@ The NeXTstation connects directly to the Claude API (`api.anthropic.com`) over H
 
 ```
 NeXTstation (68040)  ──── HTTPS/TLS 1.2 ────►  api.anthropic.com
-     192.168.1.2       via T410 gateway              Claude API
+     192.168.1.2                                     Claude API
+                     ┌──────────────┐
+                     │ T410 gateway │  (IP routing/NAT only,
+                     │ 192.168.1.1  │   no TLS involvement)
+                     └──────────────┘
 ```
 
 TLS handshake takes ~10 seconds on the 33MHz 68040. A small price for direct, encrypted communication from a 1993 machine.
