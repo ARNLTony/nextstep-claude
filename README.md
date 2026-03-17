@@ -59,7 +59,6 @@ Requires a Claude API key. Set it in a config file or pass at startup.
 claude.c          — Main client source (includes cryanc for TLS)
 cryanc.c          — Crypto Ancienne TLS library (vendored)
 cryanc.h          — Crypto Ancienne header (vendored)
-nextstep_mcp.py   — MCP server for remote development via telnet
 ```
 ## Credits & Acknowledgments
 
