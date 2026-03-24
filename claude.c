@@ -29,9 +29,10 @@
 #define API_HOST      "api.anthropic.com"
 #define API_PORT      443
 #define API_VERSION   "2023-06-01"
-#define MODEL         "claude-3-haiku-20240307"
+#define DEFAULT_MODEL "claude-3-haiku-20240307"
 #define MAX_TOKENS    1024
 #define KEY_FILE      ".claude_api_key"
+#define MODEL_FILE    ".claude_model"
 
 #define INPUT_BUF     4096
 #define RESPONSE_BUF  65536
@@ -42,6 +43,7 @@
 /* --- Globals --- */
 
 static char api_key[256];
+static char model[128];
 static char history[HISTORY_BUF];
 static int history_len = 0;
 static int running = 1;
@@ -228,7 +230,7 @@ void print_banner()
 {
     printf("\n");
     printf("  Claude for NeXTSTEP\n");
-    printf("  Model: %s\n", MODEL);
+    printf("  Model: %s\n", model);
     printf("  Type 'quit' to exit.\n");
     printf("\n");
 }
@@ -322,7 +324,7 @@ int response_size;
         "{\"model\":\"%s\","
         "\"max_tokens\":%d,"
         "\"messages\":[%s]}",
-        MODEL, MAX_TOKENS, history);
+        model, MAX_TOKENS, history);
     body_len = strlen(body);
 
     /* Build HTTP request */
@@ -486,6 +488,39 @@ int load_api_key()
     return (len > 0) ? 0 : -1;
 }
 
+/* --- Model loading --- */
+
+void load_model()
+{
+    FILE *fp;
+    int len;
+    char path[512];
+    char *home;
+
+    /* Default */
+    strncpy(model, DEFAULT_MODEL, sizeof(model) - 1);
+
+    /* Try current directory first */
+    fp = fopen(MODEL_FILE, "r");
+    if (!fp) {
+        /* Try home directory */
+        home = getenv("HOME");
+        if (home) {
+            sprintf(path, "%s/%s", home, MODEL_FILE);
+            fp = fopen(path, "r");
+        }
+    }
+
+    if (!fp) return;
+
+    if (fgets(model, sizeof(model), fp) != NULL) {
+        len = strlen(model);
+        while (len > 0 && (model[len-1] == '\n' || model[len-1] == '\r'))
+            model[--len] = '\0';
+    }
+    fclose(fp);
+}
+
 /* --- Signal handler --- */
 
 void handle_sigint(sig)
@@ -517,6 +552,9 @@ char **argv;
         printf("    ./claude sk-ant-...\n\n");
         return 1;
     }
+
+    /* Load model (from .claude_model file or default) */
+    load_model();
 
     /* Initialize */
     history[0] = '\0';

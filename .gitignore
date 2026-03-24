@@ -8,8 +8,9 @@ carl
 cryanc.c
 cryanc.h
 
-# Config with API key
+# Config files (API key, model selection)
 .claude_api_key
+.claude_model
 
 # Claude Code local settings (may contain allowed commands with credentials)
 .claude/
