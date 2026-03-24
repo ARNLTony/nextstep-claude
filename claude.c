@@ -21,8 +21,8 @@
 #include <signal.h>
 #include <unistd.h>
 
-/* Crypto Ancienne TLS library */
-#include "cryanc.c"
+/* Crypto Ancienne TLS library - linked separately via cryanc.o */
+#include "cryanc.h"
 
 /* --- Configuration --- */
 
@@ -231,7 +231,7 @@ void print_banner()
     printf("\n");
     printf("  Claude for NeXTSTEP\n");
     printf("  Model: %s\n", model);
-    printf("  Type 'quit' to exit.\n");
+    printf("  Type '/help' for commands.\n");
     printf("\n");
 }
 
@@ -585,6 +585,27 @@ char **argv;
             history[0] = '\0';
             history_len = 0;
             printf("  (conversation cleared)\n\n");
+            continue;
+        }
+
+        if (strcmp(input, "/model") == 0) {
+            printf("  Current model: %s\n\n", model);
+            continue;
+        }
+
+        if (strncmp(input, "/model ", 7) == 0) {
+            strncpy(model, input + 7, sizeof(model) - 1);
+            model[sizeof(model) - 1] = '\0';
+            printf("  Model changed to: %s\n\n", model);
+            continue;
+        }
+
+        if (strcmp(input, "/help") == 0) {
+            printf("  Commands:\n");
+            printf("    /model          - show current model\n");
+            printf("    /model <name>   - switch model\n");
+            printf("    clear           - clear conversation\n");
+            printf("    quit            - exit\n\n");
             continue;
         }
 
