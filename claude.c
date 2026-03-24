@@ -29,10 +29,12 @@
 #define API_HOST      "api.anthropic.com"
 #define API_PORT      443
 #define API_VERSION   "2023-06-01"
-#define DEFAULT_MODEL "claude-3-haiku-20240307"
+#define DEFAULT_MODEL "claude-haiku-4-5-20251001"
 #define MAX_TOKENS    1024
 #define KEY_FILE      ".claude_api_key"
 #define MODEL_FILE    ".claude_model"
+#define MODELS_FILE   ".claude_models"
+#define MAX_MODELS    16
 
 #define INPUT_BUF     4096
 #define RESPONSE_BUF  65536
@@ -44,6 +46,8 @@
 
 static char api_key[256];
 static char model[128];
+static char models[MAX_MODELS][128];
+static int model_count = 0;
 static char history[HISTORY_BUF];
 static int history_len = 0;
 static int running = 1;
@@ -490,6 +494,54 @@ int load_api_key()
 
 /* --- Model loading --- */
 
+/*
+ * Load available models from .claude_models file (one per line).
+ * Falls back to DEFAULT_MODEL if file not found.
+ */
+void load_models()
+{
+    FILE *fp;
+    char path[512];
+    char *home;
+    char line[128];
+    int len;
+
+    model_count = 0;
+
+    /* Try current directory first */
+    fp = fopen(MODELS_FILE, "r");
+    if (!fp) {
+        home = getenv("HOME");
+        if (home) {
+            sprintf(path, "%s/%s", home, MODELS_FILE);
+            fp = fopen(path, "r");
+        }
+    }
+
+    if (fp) {
+        while (model_count < MAX_MODELS && fgets(line, sizeof(line), fp)) {
+            len = strlen(line);
+            while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
+                line[--len] = '\0';
+            if (len > 0) {
+                strncpy(models[model_count], line, 127);
+                models[model_count][127] = '\0';
+                model_count++;
+            }
+        }
+        fclose(fp);
+    }
+
+    /* Ensure at least the default model is available */
+    if (model_count == 0) {
+        strncpy(models[0], DEFAULT_MODEL, 127);
+        model_count = 1;
+    }
+}
+
+/*
+ * Load last-used model from .claude_model file, or use first from models list.
+ */
 void load_model()
 {
     FILE *fp;
@@ -497,13 +549,12 @@ void load_model()
     char path[512];
     char *home;
 
-    /* Default */
-    strncpy(model, DEFAULT_MODEL, sizeof(model) - 1);
+    /* Default to first model in list */
+    strncpy(model, models[0], sizeof(model) - 1);
 
     /* Try current directory first */
     fp = fopen(MODEL_FILE, "r");
     if (!fp) {
-        /* Try home directory */
         home = getenv("HOME");
         if (home) {
             sprintf(path, "%s/%s", home, MODEL_FILE);
@@ -519,6 +570,29 @@ void load_model()
             model[--len] = '\0';
     }
     fclose(fp);
+}
+
+/*
+ * Save current model to .claude_model file for next session.
+ */
+void save_model()
+{
+    FILE *fp;
+    char path[512];
+    char *home;
+
+    fp = fopen(MODEL_FILE, "w");
+    if (!fp) {
+        home = getenv("HOME");
+        if (home) {
+            sprintf(path, "%s/%s", home, MODEL_FILE);
+            fp = fopen(path, "w");
+        }
+    }
+    if (fp) {
+        fprintf(fp, "%s\n", model);
+        fclose(fp);
+    }
 }
 
 /* --- Signal handler --- */
@@ -553,7 +627,8 @@ char **argv;
         return 1;
     }
 
-    /* Load model (from .claude_model file or default) */
+    /* Load available models, then load last-used model */
+    load_models();
     load_model();
 
     /* Initialize */
@@ -578,10 +653,10 @@ char **argv;
             continue;
 
         /* Commands */
-        if (strcmp(input, "quit") == 0 || strcmp(input, "exit") == 0)
+        if (strcmp(input, "/exit") == 0)
             break;
 
-        if (strcmp(input, "clear") == 0) {
+        if (strcmp(input, "/clear") == 0) {
             history[0] = '\0';
             history_len = 0;
             printf("  (conversation cleared)\n\n");
@@ -589,23 +664,48 @@ char **argv;
         }
 
         if (strcmp(input, "/model") == 0) {
-            printf("  Current model: %s\n\n", model);
+            int i;
+            char pick[16];
+            int choice;
+
+            printf("\n  Available models:\n");
+            for (i = 0; i < model_count; i++) {
+                printf("    %d. %s", i + 1, models[i]);
+                if (strcmp(models[i], model) == 0)
+                    printf("  (active)");
+                printf("\n");
+            }
+            printf("\n  Select [1-%d] or Enter to cancel: ", model_count);
+            fflush(stdout);
+
+            if (fgets(pick, sizeof(pick), stdin) != NULL) {
+                choice = atoi(pick);
+                if (choice >= 1 && choice <= model_count) {
+                    strncpy(model, models[choice - 1], sizeof(model) - 1);
+                    model[sizeof(model) - 1] = '\0';
+                    save_model();
+                    printf("  Model changed to: %s\n\n", model);
+                } else {
+                    printf("  (no change)\n\n");
+                }
+            }
             continue;
         }
 
         if (strncmp(input, "/model ", 7) == 0) {
             strncpy(model, input + 7, sizeof(model) - 1);
             model[sizeof(model) - 1] = '\0';
+            save_model();
             printf("  Model changed to: %s\n\n", model);
             continue;
         }
 
         if (strcmp(input, "/help") == 0) {
             printf("  Commands:\n");
-            printf("    /model          - show current model\n");
-            printf("    /model <name>   - switch model\n");
-            printf("    clear           - clear conversation\n");
-            printf("    quit            - exit\n\n");
+            printf("    /model          - list & select model\n");
+            printf("    /model <name>   - switch to model by name\n");
+            printf("    /clear          - clear conversation\n");
+            printf("    /exit           - exit\n\n");
             continue;
         }
 
