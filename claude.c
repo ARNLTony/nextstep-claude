@@ -29,7 +29,7 @@
 #define API_HOST      "api.anthropic.com"
 #define API_PORT      443
 #define API_VERSION   "2023-06-01"
-#define MODEL         "claude-haiku-4-5-20251001"
+#define MODEL         "claude-3-haiku-20240307"
 #define MAX_TOKENS    1024
 #define KEY_FILE      ".claude_api_key"
 
