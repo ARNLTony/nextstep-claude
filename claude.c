@@ -364,7 +364,13 @@ int width;
 void print_banner()
 {
     printf("\n");
-    printf("  Welcome back!\n");
+    {
+        char *user;
+        user = getlogin();
+        if (!user) user = getenv("USER");
+        if (!user) user = "friend";
+        printf("  Welcome back, %s!\n", user);
+    }
     printf("\n");
     printf("      ############\n");
     printf("      ## ###### ##\n");
