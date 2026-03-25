@@ -1105,7 +1105,7 @@ char **argv;
     }
 
     /* Get working directory */
-    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+    if (getwd(cwd) == NULL) {
         strcpy(cwd, ".");
     }
 
