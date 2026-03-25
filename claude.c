@@ -1165,6 +1165,10 @@ char **argv;
     build_platform_prompt();
     rebuild_system_prompt();
 
+    /* Clear screen */
+    printf("\033[2J\033[H");
+    fflush(stdout);
+
     print_banner();
 
     /* Main conversation loop */
