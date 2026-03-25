@@ -376,6 +376,7 @@ void print_banner()
     printf("  Model: %s\n", model);
     if (auto_execute)
         printf("  Command mode: auto-execute\n");
+    printf("  CWD: %s\n", cwd);
     printf("  Type '/help' for commands.\n");
     printf("\n");
 }
