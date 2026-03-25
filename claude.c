@@ -364,6 +364,13 @@ int width;
 void print_banner()
 {
     printf("\n");
+    printf("      ############\n");
+    printf("      ## ###### ##\n");
+    printf("    ################\n");
+    printf("      ############\n");
+    printf("       # #    # #\n");
+    printf("\n");
+    printf("  Welcome back!\n");
     printf("  Claude for NeXTSTEP v%s\n", VERSION);
     printf("  Model: %s\n", model);
     if (auto_execute)
