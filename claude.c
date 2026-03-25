@@ -696,14 +696,19 @@ void build_platform_prompt()
     char host_info[512];
     char host_name[128];
     char arch_name[64];
+    char git_check[128];
+    int has_git;
 
     host_info[0] = '\0';
     host_name[0] = '\0';
     arch_name[0] = '\0';
+    git_check[0] = '\0';
 
     run_capture("hostinfo 2>/dev/null", host_info, sizeof(host_info));
     run_capture("hostname 2>/dev/null", host_name, sizeof(host_name));
     run_capture("arch 2>/dev/null", arch_name, sizeof(arch_name));
+    run_capture("which git 2>/dev/null", git_check, sizeof(git_check));
+    has_git = (git_check[0] != '\0' && strstr(git_check, "not found") == NULL);
 
     sprintf(platform_prompt,
         "You are running natively on a NeXTSTEP machine.\\n"
@@ -718,13 +723,20 @@ void build_platform_prompt()
         "include <cmd>command</cmd> in your response. "
         "The command will be executed and you will receive the output. "
         "Only use commands that read or inspect - never modify, delete, or move files. "
-        "Commands are restricted to the working directory.",
+        "Commands are restricted to the working directory.%s",
         host_info[0] ? host_info : "NeXTSTEP 3.3",
         host_name[0] ? host_name : "unknown",
         arch_name[0] ? arch_name : "m68k",
-        cwd);
+        cwd,
+        has_git ?
+        "\\nGit is available. When the user asks to push, pull, commit, "
+        "clone, check status, view logs, or any git operation, use "
+        "<cmd>git COMMAND</cmd>. Available: clone, status, add, commit, "
+        "push, pull, log, diff, branch, checkout, merge, tag, release, "
+        "issues, issue, pulls, repos, cat, help." : "");
 
-    log_msg("Platform prompt built");
+    log_msg(has_git ? "Platform prompt built (git available)" :
+                      "Platform prompt built (no git)");
 }
 
 /*
