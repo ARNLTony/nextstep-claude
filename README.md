@@ -4,19 +4,7 @@ A native Claude AI console client for NeXTSTEP 3.3, running on a NeXTstation Tur
 
 This project brings modern AI to vintage hardware — a C client that speaks directly to the Claude API over TLS 1.2, compiled with gcc 2.5.8 from 1993.
 
-```
-╔══════════════════════════════════════╗
-║  Claude for NeXTSTEP                 ║
-╚══════════════════════════════════════╝
-
-you> Hello from 1993!
-
-claude> Hello! It's remarkable to be running
-on a NeXTstation — the machine that gave us
-the World Wide Web. What shall we discuss?
-
-you> _
-```
+![Claude running on NeXTSTEP](ClaudeMessage.png)
 
 ## Hardware
 
