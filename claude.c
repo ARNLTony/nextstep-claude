@@ -35,6 +35,7 @@
 #define MODEL_FILE    ".claude_model"
 #define MODELS_FILE   ".claude_models"
 #define MAX_MODELS    16
+#define VERSION       "1.0"
 
 #define INPUT_BUF     4096
 #define RESPONSE_BUF  65536
@@ -50,7 +51,12 @@ static char models[MAX_MODELS][128];
 static int model_count = 0;
 static char history[HISTORY_BUF];
 static int history_len = 0;
+static int msg_count = 0;
 static int running = 1;
+static float temperature = 1.0;
+static char system_prompt[2048];
+static int last_input_tokens = 0;
+static int last_output_tokens = 0;
 
 /* --- TLS helpers (from carl.c pattern) --- */
 
@@ -139,6 +145,35 @@ int *out_len;
 
         *out_len = p - start;
         return start;
+    }
+}
+
+/*
+ * Find a JSON integer value by key. Returns the value, or -1 if not found.
+ */
+int json_find_int(json, key)
+char *json;
+char *key;
+{
+    char pattern[256];
+    char *p, *search;
+
+    sprintf(pattern, "\"%s\"", key);
+    search = json;
+
+    while (1) {
+        p = strstr(search, pattern);
+        if (!p) return -1;
+
+        p += strlen(pattern);
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (*p != ':') { search = p; continue; }
+        p++;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+
+        if (*p >= '0' && *p <= '9')
+            return atoi(p);
+        search = p;
     }
 }
 
@@ -321,14 +356,25 @@ int response_size;
     history_append("user", user_message);
 
     /* Build JSON request body */
-    body = (char *)malloc(HISTORY_BUF + 512);
+    body = (char *)malloc(HISTORY_BUF + 4096);
     if (!body) { strcpy(response, "Out of memory"); return -1; }
 
-    sprintf(body,
-        "{\"model\":\"%s\","
-        "\"max_tokens\":%d,"
-        "\"messages\":[%s]}",
-        model, MAX_TOKENS, history);
+    if (system_prompt[0]) {
+        sprintf(body,
+            "{\"model\":\"%s\","
+            "\"max_tokens\":%d,"
+            "\"temperature\":%.1f,"
+            "\"system\":\"%s\","
+            "\"messages\":[%s]}",
+            model, MAX_TOKENS, (double)temperature, system_prompt, history);
+    } else {
+        sprintf(body,
+            "{\"model\":\"%s\","
+            "\"max_tokens\":%d,"
+            "\"temperature\":%.1f,"
+            "\"messages\":[%s]}",
+            model, MAX_TOKENS, (double)temperature, history);
+    }
     body_len = strlen(body);
 
     /* Build HTTP request */
@@ -447,6 +493,9 @@ int response_size;
     if (body_start) {
         body_start += 4;
         extract_response_text(body_start, response, response_size);
+        /* Extract token usage */
+        last_input_tokens = json_find_int(body_start, "input_tokens");
+        last_output_tokens = json_find_int(body_start, "output_tokens");
     } else {
         strncpy(response, resp_data, response_size - 1);
         response[response_size - 1] = '\0';
@@ -634,6 +683,7 @@ char **argv;
     /* Initialize */
     history[0] = '\0';
     history_len = 0;
+    system_prompt[0] = '\0';
 
     print_banner();
 
@@ -653,13 +703,22 @@ char **argv;
             continue;
 
         /* Commands */
-        if (strcmp(input, "/exit") == 0)
+        if (strcmp(input, "/exit") == 0 || strcmp(input, "/quit") == 0)
             break;
 
         if (strcmp(input, "/clear") == 0) {
             history[0] = '\0';
             history_len = 0;
+            msg_count = 0;
             printf("  (conversation cleared)\n\n");
+            continue;
+        }
+
+        if (strcmp(input, "/new") == 0) {
+            history[0] = '\0';
+            history_len = 0;
+            msg_count = 0;
+            printf("  (new conversation started)\n\n");
             continue;
         }
 
@@ -700,11 +759,104 @@ char **argv;
             continue;
         }
 
+        if (strncmp(input, "/system ", 8) == 0) {
+            strncpy(system_prompt, input + 8, sizeof(system_prompt) - 1);
+            system_prompt[sizeof(system_prompt) - 1] = '\0';
+            printf("  System prompt set.\n\n");
+            continue;
+        }
+
+        if (strcmp(input, "/system") == 0) {
+            if (system_prompt[0]) {
+                printf("  System prompt: %s\n\n", system_prompt);
+            } else {
+                printf("  No system prompt set. Use: /system <prompt>\n\n");
+            }
+            continue;
+        }
+
+        if (strncmp(input, "/temp ", 6) == 0) {
+            double t;
+            t = atof(input + 6);
+            if (t >= 0.0 && t <= 1.0) {
+                temperature = (float)t;
+                printf("  Temperature set to %.1f\n\n", t);
+            } else {
+                printf("  Temperature must be 0.0 to 1.0\n\n");
+            }
+            continue;
+        }
+
+        if (strcmp(input, "/temp") == 0) {
+            printf("  Temperature: %.1f\n\n", (double)temperature);
+            continue;
+        }
+
+        if (strcmp(input, "/tokens") == 0) {
+            if (last_input_tokens > 0 || last_output_tokens > 0) {
+                printf("  Last request:\n");
+                printf("    Input tokens:  %d\n", last_input_tokens);
+                printf("    Output tokens: %d\n\n", last_output_tokens);
+            } else {
+                printf("  No token data yet. Send a message first.\n\n");
+            }
+            continue;
+        }
+
+        if (strncmp(input, "/save ", 6) == 0) {
+            FILE *sf;
+            sf = fopen(input + 6, "w");
+            if (sf) {
+                fprintf(sf, "Claude for NeXTSTEP - Conversation Log\n");
+                fprintf(sf, "Model: %s\n", model);
+                fprintf(sf, "Messages: %d\n", msg_count);
+                fprintf(sf, "--------------------------------------\n\n");
+                fprintf(sf, "%s\n", history);
+                fclose(sf);
+                printf("  Conversation saved to: %s\n\n", input + 6);
+            } else {
+                printf("  Error: could not open %s for writing\n\n", input + 6);
+            }
+            continue;
+        }
+
+        if (strcmp(input, "/info") == 0) {
+            printf("  Model:       %s\n", model);
+            printf("  Temperature: %.1f\n", (double)temperature);
+            printf("  System:      %s\n", system_prompt[0] ? system_prompt : "(none)");
+            printf("  Messages:    %d\n", msg_count);
+            printf("  History:     %d / %d bytes\n\n", history_len, HISTORY_BUF);
+            continue;
+        }
+
+        if (strcmp(input, "/version") == 0) {
+            printf("  Claude for NeXTSTEP v%s\n", VERSION);
+            printf("  (c) 2026 ARNLTony & Claude\n\n");
+            continue;
+        }
+
+        if (strcmp(input, "/key") == 0) {
+            if (load_api_key() == 0) {
+                printf("  API key reloaded.\n\n");
+            } else {
+                printf("  Error: could not reload API key.\n\n");
+            }
+            continue;
+        }
+
         if (strcmp(input, "/help") == 0) {
             printf("  Commands:\n");
             printf("    /model          - list & select model\n");
-            printf("    /model <name>   - switch to model by name\n");
+            printf("    /model <name>   - switch to model\n");
+            printf("    /system <text>  - set system prompt\n");
+            printf("    /temp <0-1>     - set temperature\n");
+            printf("    /tokens         - show last token usage\n");
+            printf("    /save <file>    - save conversation\n");
+            printf("    /new            - new conversation\n");
             printf("    /clear          - clear conversation\n");
+            printf("    /info           - show session info\n");
+            printf("    /key            - reload API key\n");
+            printf("    /version        - show version\n");
             printf("    /exit           - exit\n\n");
             continue;
         }
@@ -716,6 +868,7 @@ char **argv;
 
         if (result == 0 && response[0]) {
             history_append("assistant", response);
+            msg_count++;
             printf("\n");
             print_wrapped("claude> ", response, WRAP_WIDTH);
         } else {
