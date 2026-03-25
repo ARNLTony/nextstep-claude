@@ -286,6 +286,40 @@ int out_size;
     out[j] = '\0';
 }
 
+/*
+ * Strip non-ASCII bytes from a string in place.
+ * NeXTSTEP uses NeXTEncoding (8-bit), not UTF-8.
+ * This removes emojis and other multi-byte UTF-8 characters
+ * that would display as garbage on the NeXT terminal.
+ */
+void strip_non_ascii(text)
+char *text;
+{
+    char *r, *w;
+
+    r = text;
+    w = text;
+    while (*r) {
+        if ((unsigned char)*r >= 0x20 && (unsigned char)*r < 0x7F) {
+            /* Printable ASCII */
+            *w++ = *r++;
+        } else if (*r == '\n' || *r == '\t' || *r == '\r') {
+            /* Keep whitespace control chars */
+            *w++ = *r++;
+        } else if ((unsigned char)*r >= 0x80) {
+            /* Skip UTF-8 multi-byte sequences */
+            if (((unsigned char)*r & 0xE0) == 0xC0) r += 2;
+            else if (((unsigned char)*r & 0xF0) == 0xE0) r += 3;
+            else if (((unsigned char)*r & 0xF8) == 0xF0) r += 4;
+            else r++;
+        } else {
+            /* Skip other control characters */
+            r++;
+        }
+    }
+    *w = '\0';
+}
+
 /* --- Display helpers --- */
 
 void print_wrapped(prefix, text, width)
@@ -909,6 +943,7 @@ int response_size;
     if (body_start) {
         body_start += 4;
         extract_response_text(body_start, response, response_size);
+        strip_non_ascii(response);
         /* Extract token usage */
         last_input_tokens = json_find_int(body_start, "input_tokens");
         last_output_tokens = json_find_int(body_start, "output_tokens");
