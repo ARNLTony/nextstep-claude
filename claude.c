@@ -1192,8 +1192,7 @@ char **argv;
     build_platform_prompt();
     rebuild_system_prompt();
 
-    /* Set window title and clear screen */
-    printf("\033]0;Claude AI on NeXTSTEP\007");
+    /* Clear screen */
     printf("\033[2J\033[H");
     fflush(stdout);
 
