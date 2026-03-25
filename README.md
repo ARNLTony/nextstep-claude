@@ -51,7 +51,36 @@ The build takes ~6 minutes on the 68040 (cryanc is a 1.4MB single-file TLS libra
 ./claude
 ```
 
-Requires a Claude API key. Set it in a config file or pass at startup.
+Requires a Claude API key in `~/.claude_api_key` or pass at startup:
+
+```sh
+./claude sk-ant-...
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/model` | List & select model |
+| `/model <name>` | Switch to model |
+| `/system <text>` | Set system prompt |
+| `/temp <0-1>` | Set temperature |
+| `/tokens` | Show last token usage |
+| `/save <file>` | Save conversation to file |
+| `/new` | Start new conversation |
+| `/clear` | Clear conversation |
+| `/info` | Show session info |
+| `/key` | Reload API key |
+| `/version` | Show version |
+| `/exit` | Exit |
+
+### Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `.claude_api_key` | Anthropic API key |
+| `.claude_model` | Last-used model (auto-saved) |
+| `.claude_models` | Available models list (one per line) |
 
 ## Project Structure
 
