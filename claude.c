@@ -6,7 +6,7 @@
  * using Crypto Ancienne (cryanc) by Cameron Kaiser.
  *
  * Build: cc -O -o claude claude.c
- * Usage: ./claude
+ * Usage: ./claude [--dangerously-skip-permissions] [sk-ant-...]
  *
  * (c) 2026 ARNLTony & Claude. MIT License.
  */
@@ -35,13 +35,23 @@
 #define MODEL_FILE    ".claude_model"
 #define MODELS_FILE   ".claude_models"
 #define MAX_MODELS    16
-#define VERSION       "1.0"
+#define VERSION       "1.1"
 
 #define INPUT_BUF     4096
 #define RESPONSE_BUF  65536
 #define HISTORY_BUF   32768
 #define HTTP_BUF      4096
 #define WRAP_WIDTH    72
+
+#define CMD_TAG_OPEN  "<cmd>"
+#define CMD_TAG_CLOSE "</cmd>"
+#define MAX_CMD_LEN   512
+#define CMD_OUTPUT_BUF 4096
+#define MAX_CMD_LOOPS  5
+#define DENY_FILE     ".claude_deny"
+#define ALLOW_FILE    ".claude_allow"
+#define MAX_RULES     64
+#define MAX_RULE_LEN  64
 
 /* --- Globals --- */
 
@@ -54,9 +64,61 @@ static int history_len = 0;
 static int msg_count = 0;
 static int running = 1;
 static float temperature = 1.0;
-static char system_prompt[2048];
+static char platform_prompt[2048];
+static char user_prompt[1024];
+static char system_prompt[4096];
 static int last_input_tokens = 0;
 static int last_output_tokens = 0;
+
+/* Command execution */
+static int auto_execute = 0;
+static char cwd[512];
+static char deny_list[MAX_RULES][MAX_RULE_LEN];
+static int deny_count = 0;
+static char allow_list[MAX_RULES][MAX_RULE_LEN];
+static int allow_count = 0;
+static FILE *logfp = NULL;
+
+/* Hardcoded deny list - always enforced */
+static char *builtin_deny[] = {
+    "rm", "mv", "cp", "dd",
+    "mkfs", "newfs", "fdisk", "format",
+    "chmod", "chown", "mknod",
+    "halt", "reboot", "shutdown",
+    NULL
+};
+
+/* --- Logging --- */
+
+void log_msg(msg)
+char *msg;
+{
+    if (logfp) {
+        fprintf(logfp, "%s\n", msg);
+        fflush(logfp);
+    }
+}
+
+void log_fmt2(fmt, a, b)
+char *fmt;
+char *a;
+char *b;
+{
+    if (logfp) {
+        fprintf(logfp, fmt, a, b);
+        fprintf(logfp, "\n");
+        fflush(logfp);
+    }
+}
+
+void open_log()
+{
+    logfp = fopen("claude.log", "a");
+    if (logfp) {
+        fprintf(logfp, "\n=== Session started ===\n");
+        fflush(logfp);
+    }
+}
 
 /* --- TLS helpers (from carl.c pattern) --- */
 
@@ -268,10 +330,364 @@ int width;
 void print_banner()
 {
     printf("\n");
-    printf("  Claude for NeXTSTEP\n");
+    printf("  Claude for NeXTSTEP v%s\n", VERSION);
     printf("  Model: %s\n", model);
+    if (auto_execute)
+        printf("  Command mode: auto-execute\n");
     printf("  Type '/help' for commands.\n");
     printf("\n");
+}
+
+/* --- Command safety --- */
+
+/*
+ * Load a rule list from a config file (one prefix per line).
+ * Tries cwd first, then home directory.
+ */
+int load_rule_file(filename, list, max_rules)
+char *filename;
+char list[][MAX_RULE_LEN];
+int max_rules;
+{
+    FILE *fp;
+    char path[512];
+    char *home;
+    char line[MAX_RULE_LEN];
+    int count = 0;
+    int len;
+
+    fp = fopen(filename, "r");
+    if (!fp) {
+        home = getenv("HOME");
+        if (home) {
+            sprintf(path, "%s/%s", home, filename);
+            fp = fopen(path, "r");
+        }
+    }
+
+    if (!fp) return 0;
+
+    while (count < max_rules && fgets(line, sizeof(line), fp)) {
+        len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
+            line[--len] = '\0';
+        if (len > 0 && line[0] != '#') {
+            strncpy(list[count], line, MAX_RULE_LEN - 1);
+            list[count][MAX_RULE_LEN - 1] = '\0';
+            count++;
+        }
+    }
+    fclose(fp);
+    return count;
+}
+
+void load_cmd_rules()
+{
+    deny_count = load_rule_file(DENY_FILE, deny_list, MAX_RULES);
+    allow_count = load_rule_file(ALLOW_FILE, allow_list, MAX_RULES);
+    log_fmt2("Loaded %s deny, %s allow rules",
+        deny_count ? "custom" : "0", allow_count ? "custom" : "0");
+}
+
+/*
+ * Extract the first word (command name) from a command string.
+ */
+void get_cmd_name(cmd, name, name_size)
+char *cmd;
+char *name;
+int name_size;
+{
+    int i = 0;
+
+    /* Skip leading whitespace */
+    while (*cmd == ' ' || *cmd == '\t') cmd++;
+
+    while (*cmd && *cmd != ' ' && *cmd != '\t' && i < name_size - 1) {
+        name[i++] = *cmd++;
+    }
+    name[i] = '\0';
+}
+
+/*
+ * Check if a command matches any entry in a rule list.
+ * Matches by command name prefix.
+ */
+int matches_list(cmd, list, count)
+char *cmd;
+char list[][MAX_RULE_LEN];
+int count;
+{
+    char name[MAX_RULE_LEN];
+    int i;
+
+    get_cmd_name(cmd, name, sizeof(name));
+
+    for (i = 0; i < count; i++) {
+        if (strcmp(name, list[i]) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/*
+ * Check if a command matches the hardcoded deny list.
+ */
+int matches_builtin_deny(cmd)
+char *cmd;
+{
+    char name[MAX_RULE_LEN];
+    int i;
+
+    get_cmd_name(cmd, name, sizeof(name));
+
+    for (i = 0; builtin_deny[i] != NULL; i++) {
+        if (strcmp(name, builtin_deny[i]) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/*
+ * Check if a command tries to escape the working directory.
+ * Blocks ".." traversal and absolute paths outside cwd.
+ */
+int path_is_safe(cmd)
+char *cmd;
+{
+    /* Block .. traversal */
+    if (strstr(cmd, ".."))
+        return 0;
+
+    /* Check for absolute paths - scan for / followed by a path */
+    {
+        char *p = cmd;
+        while (*p) {
+            if (*p == '/' && p != cmd && *(p-1) == ' ') {
+                /* Found an absolute path argument */
+                if (strncmp(p, cwd, strlen(cwd)) != 0)
+                    return 0;
+            }
+            p++;
+        }
+    }
+
+    return 1;
+}
+
+/*
+ * Check command safety. Returns:
+ *  0 = denied (blocked)
+ *  1 = allowed (pre-approved or auto-execute)
+ *  2 = ask user
+ */
+int check_cmd_safety(cmd)
+char *cmd;
+{
+    /* 1. Hardcoded deny - always enforced */
+    if (matches_builtin_deny(cmd))
+        return 0;
+
+    /* 2. User deny list - always enforced */
+    if (matches_list(cmd, deny_list, deny_count))
+        return 0;
+
+    /* 3. Path safety */
+    if (!path_is_safe(cmd))
+        return 0;
+
+    /* 4. User allow list */
+    if (matches_list(cmd, allow_list, allow_count))
+        return 1;
+
+    /* 5. Auto-execute mode */
+    if (auto_execute)
+        return 1;
+
+    /* 6. Ask user */
+    return 2;
+}
+
+/* --- Command execution --- */
+
+/*
+ * Find <cmd>...</cmd> in response text.
+ * Returns pointer to command string (static buffer), or NULL.
+ */
+char *find_cmd_tag(text)
+char *text;
+{
+    static char cmd_buf[MAX_CMD_LEN];
+    char *start, *end;
+    int len;
+
+    start = strstr(text, CMD_TAG_OPEN);
+    if (!start) return NULL;
+
+    start += strlen(CMD_TAG_OPEN);
+    end = strstr(start, CMD_TAG_CLOSE);
+    if (!end) return NULL;
+
+    len = end - start;
+    if (len <= 0 || len >= MAX_CMD_LEN) return NULL;
+
+    strncpy(cmd_buf, start, len);
+    cmd_buf[len] = '\0';
+    return cmd_buf;
+}
+
+/*
+ * Remove all <cmd>...</cmd> tags from text, in place.
+ */
+void strip_cmd_tags(text)
+char *text;
+{
+    char *start, *end;
+    int tag_close_len;
+
+    tag_close_len = strlen(CMD_TAG_CLOSE);
+
+    while ((start = strstr(text, CMD_TAG_OPEN)) != NULL) {
+        end = strstr(start, CMD_TAG_CLOSE);
+        if (!end) break;
+        end += tag_close_len;
+        /* Shift everything after the tag back */
+        memmove(start, end, strlen(end) + 1);
+    }
+}
+
+/*
+ * Execute a command and capture its output.
+ * Returns 0 on success, -1 on failure.
+ */
+int execute_cmd(cmd, output, output_size)
+char *cmd;
+char *output;
+int output_size;
+{
+    FILE *pp;
+    int total = 0;
+    int n;
+
+    pp = popen(cmd, "r");
+    if (!pp) {
+        strcpy(output, "(failed to execute command)");
+        return -1;
+    }
+
+    while (total < output_size - 1) {
+        n = fread(output + total, 1, output_size - 1 - total, pp);
+        if (n <= 0) break;
+        total += n;
+    }
+    output[total] = '\0';
+    pclose(pp);
+
+    return 0;
+}
+
+/*
+ * Ask user for permission to run a command.
+ * Returns 1 if approved, 0 if denied.
+ */
+int ask_permission(cmd)
+char *cmd;
+{
+    char answer[16];
+
+    printf("  Execute: %s\n", cmd);
+    printf("  Allow? [y/n] ");
+    fflush(stdout);
+
+    if (fgets(answer, sizeof(answer), stdin) == NULL)
+        return 0;
+
+    return (answer[0] == 'y' || answer[0] == 'Y');
+}
+
+/* --- Platform detection --- */
+
+/*
+ * Run a command and capture first line of output into buf.
+ * Returns 0 on success, -1 on failure.
+ */
+int run_capture(cmd, buf, buf_size)
+char *cmd;
+char *buf;
+int buf_size;
+{
+    FILE *pp;
+    int len;
+
+    pp = popen(cmd, "r");
+    if (!pp) {
+        buf[0] = '\0';
+        return -1;
+    }
+
+    if (fgets(buf, buf_size, pp) == NULL) {
+        buf[0] = '\0';
+        pclose(pp);
+        return -1;
+    }
+    pclose(pp);
+
+    /* Strip trailing newline */
+    len = strlen(buf);
+    while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r'))
+        buf[--len] = '\0';
+
+    return 0;
+}
+
+/*
+ * Build the platform system prompt by detecting the environment.
+ */
+void build_platform_prompt()
+{
+    char host_info[512];
+    char host_name[128];
+    char arch_name[64];
+
+    host_info[0] = '\0';
+    host_name[0] = '\0';
+    arch_name[0] = '\0';
+
+    run_capture("hostinfo 2>/dev/null", host_info, sizeof(host_info));
+    run_capture("hostname 2>/dev/null", host_name, sizeof(host_name));
+    run_capture("arch 2>/dev/null", arch_name, sizeof(arch_name));
+
+    sprintf(platform_prompt,
+        "You are running natively on a NeXTSTEP machine.\\n"
+        "System: %s\\n"
+        "Hostname: %s\\n"
+        "Architecture: %s\\n"
+        "Working directory: %s\\n"
+        "This is a vintage NeXTSTEP 3.3 system with BSD 4.3 tools. "
+        "Use only commands compatible with this platform. "
+        "No GNU extensions, no -p flag on mkdir, etc.\\n"
+        "When you need to inspect the system to answer a question, "
+        "include <cmd>command</cmd> in your response. "
+        "The command will be executed and you will receive the output. "
+        "Only use commands that read or inspect - never modify, delete, or move files. "
+        "Commands are restricted to the working directory.",
+        host_info[0] ? host_info : "NeXTSTEP 3.3",
+        host_name[0] ? host_name : "unknown",
+        arch_name[0] ? arch_name : "m68k",
+        cwd);
+
+    log_msg("Platform prompt built");
+}
+
+/*
+ * Rebuild the combined system prompt from platform + user parts.
+ */
+void rebuild_system_prompt()
+{
+    if (user_prompt[0]) {
+        sprintf(system_prompt, "%s\\n\\n%s", platform_prompt, user_prompt);
+    } else {
+        strcpy(system_prompt, platform_prompt);
+    }
 }
 
 /* --- History management --- */
@@ -294,7 +710,7 @@ char *content;
         /* History full, reset to keep things working */
         history_len = 0;
         history[0] = '\0';
-        printf("  (conversation history cleared — memory full)\n\n");
+        printf("  (conversation history cleared -- memory full)\n\n");
         return;
     }
 
@@ -662,13 +1078,25 @@ char **argv;
     char input[INPUT_BUF];
     char response[RESPONSE_BUF];
     int result;
+    int i;
 
     signal(SIGINT, handle_sigint);
 
-    /* Load API key */
-    if (argc > 1 && strncmp(argv[1], "sk-", 3) == 0) {
-        strncpy(api_key, argv[1], sizeof(api_key) - 1);
-    } else if (load_api_key() != 0) {
+    /* Parse arguments */
+    auto_execute = 0;
+    api_key[0] = '\0';
+
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--dangerously-skip-permissions") == 0 ||
+            strcmp(argv[i], "-y") == 0) {
+            auto_execute = 1;
+        } else if (strncmp(argv[i], "sk-", 3) == 0) {
+            strncpy(api_key, argv[i], sizeof(api_key) - 1);
+        }
+    }
+
+    /* Load API key if not passed as argument */
+    if (api_key[0] == '\0' && load_api_key() != 0) {
         printf("\n  Claude for NeXTSTEP\n\n");
         printf("  API key not found. Create a file called '%s'\n", KEY_FILE);
         printf("  containing your Anthropic API key, or pass it as an argument:\n\n");
@@ -676,14 +1104,31 @@ char **argv;
         return 1;
     }
 
+    /* Get working directory */
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        strcpy(cwd, ".");
+    }
+
+    /* Open log */
+    open_log();
+    log_fmt2("CWD: %s, Auto-execute: %s",
+        cwd, auto_execute ? "yes" : "no");
+
     /* Load available models, then load last-used model */
     load_models();
     load_model();
 
+    /* Load command safety rules */
+    load_cmd_rules();
+
     /* Initialize */
     history[0] = '\0';
     history_len = 0;
-    system_prompt[0] = '\0';
+    user_prompt[0] = '\0';
+
+    /* Build platform-aware system prompt */
+    build_platform_prompt();
+    rebuild_system_prompt();
 
     print_banner();
 
@@ -723,7 +1168,6 @@ char **argv;
         }
 
         if (strcmp(input, "/model") == 0) {
-            int i;
             char pick[16];
             int choice;
 
@@ -760,17 +1204,18 @@ char **argv;
         }
 
         if (strncmp(input, "/system ", 8) == 0) {
-            strncpy(system_prompt, input + 8, sizeof(system_prompt) - 1);
-            system_prompt[sizeof(system_prompt) - 1] = '\0';
+            strncpy(user_prompt, input + 8, sizeof(user_prompt) - 1);
+            user_prompt[sizeof(user_prompt) - 1] = '\0';
+            rebuild_system_prompt();
             printf("  System prompt set.\n\n");
             continue;
         }
 
         if (strcmp(input, "/system") == 0) {
-            if (system_prompt[0]) {
-                printf("  System prompt: %s\n\n", system_prompt);
+            if (user_prompt[0]) {
+                printf("  System prompt: %s\n\n", user_prompt);
             } else {
-                printf("  No system prompt set. Use: /system <prompt>\n\n");
+                printf("  No custom system prompt. Platform context is active.\n\n");
             }
             continue;
         }
@@ -823,7 +1268,9 @@ char **argv;
         if (strcmp(input, "/info") == 0) {
             printf("  Model:       %s\n", model);
             printf("  Temperature: %.1f\n", (double)temperature);
-            printf("  System:      %s\n", system_prompt[0] ? system_prompt : "(none)");
+            printf("  System:      %s\n", user_prompt[0] ? user_prompt : "(platform only)");
+            printf("  Auto-exec:   %s\n", auto_execute ? "yes" : "no");
+            printf("  CWD:         %s\n", cwd);
             printf("  Messages:    %d\n", msg_count);
             printf("  History:     %d / %d bytes\n\n", history_len, HISTORY_BUF);
             continue;
@@ -848,7 +1295,7 @@ char **argv;
             printf("  Commands:\n");
             printf("    /model          - list & select model\n");
             printf("    /model <name>   - switch to model\n");
-            printf("    /system <text>  - set system prompt\n");
+            printf("    /system <text>  - set custom system prompt\n");
             printf("    /temp <0-1>     - set temperature\n");
             printf("    /tokens         - show last token usage\n");
             printf("    /save <file>    - save conversation\n");
@@ -857,7 +1304,10 @@ char **argv;
             printf("    /info           - show session info\n");
             printf("    /key            - reload API key\n");
             printf("    /version        - show version\n");
-            printf("    /exit           - exit\n\n");
+            printf("    /exit           - exit\n");
+            printf("\n  Startup flags:\n");
+            printf("    -y, --dangerously-skip-permissions\n");
+            printf("                    - auto-execute commands\n\n");
             continue;
         }
 
@@ -867,16 +1317,83 @@ char **argv;
         result = claude_send(input, response, sizeof(response));
 
         if (result == 0 && response[0]) {
+            /* Command execution loop */
+            int cmd_loops = 0;
+            char *cmd;
+
+            while (cmd_loops < MAX_CMD_LOOPS &&
+                   (cmd = find_cmd_tag(response)) != NULL) {
+                int safety;
+                char cmd_output[CMD_OUTPUT_BUF];
+                char feedback[CMD_OUTPUT_BUF + 256];
+
+                cmd_loops++;
+                safety = check_cmd_safety(cmd);
+
+                if (safety == 0) {
+                    /* Denied */
+                    printf("  [DENIED] %s\n", cmd);
+                    log_fmt2("CMD DENIED: %s", cmd, "");
+                    sprintf(feedback,
+                        "Command denied (blocked by safety rules): %s. "
+                        "Please answer without running that command, or try "
+                        "a different command.", cmd);
+                    strip_cmd_tags(response);
+                    history_append("assistant", response);
+                    response[0] = '\0';
+                    result = claude_send(feedback, response, sizeof(response));
+                    if (result != 0) break;
+                    continue;
+                }
+
+                if (safety == 2) {
+                    /* Ask user */
+                    if (!ask_permission(cmd)) {
+                        printf("  [SKIPPED]\n");
+                        log_fmt2("CMD SKIPPED: %s", cmd, "");
+                        sprintf(feedback,
+                            "The user denied the command: %s. "
+                            "Please answer without it.", cmd);
+                        strip_cmd_tags(response);
+                        history_append("assistant", response);
+                        response[0] = '\0';
+                        result = claude_send(feedback, response, sizeof(response));
+                        if (result != 0) break;
+                        continue;
+                    }
+                }
+
+                /* Execute */
+                printf("  [RUN] %s\n", cmd);
+                log_fmt2("CMD EXEC: %s", cmd, "");
+                cmd_output[0] = '\0';
+                execute_cmd(cmd, cmd_output, sizeof(cmd_output));
+                log_fmt2("CMD OUTPUT: %s", cmd_output, "");
+
+                /* Send output back to Claude */
+                strip_cmd_tags(response);
+                history_append("assistant", response);
+                sprintf(feedback, "Command output for '%s':\n%s", cmd, cmd_output);
+                response[0] = '\0';
+                result = claude_send(feedback, response, sizeof(response));
+                if (result != 0) break;
+            }
+
+            /* Display final response (with any remaining tags stripped) */
+            strip_cmd_tags(response);
             history_append("assistant", response);
             msg_count++;
             printf("\n");
             print_wrapped("claude> ", response, WRAP_WIDTH);
         } else {
             printf("  Error: %s\n", response);
+            log_fmt2("API ERROR: %s", response, "");
         }
         printf("\n");
     }
 
     printf("\n  Goodbye!\n\n");
+    log_msg("Session ended");
+    if (logfp) fclose(logfp);
     return 0;
 }
